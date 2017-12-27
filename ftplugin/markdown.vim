@@ -371,7 +371,8 @@ function! s:Toc(...)
         if (&columns/2) > l:header_max_len && l:vim_markdown_toc_autofit == 1
             execute 'vertical resize ' . (l:header_max_len + 1)
         else
-            execute 'vertical resize ' . (&columns/2)
+            " execute 'vertical resize ' . (&columns/2)
+            execute 'vertical resize ' . '30'
         endif
     elseif l:window_type ==# 'tab'
         tab lopen
@@ -401,6 +402,10 @@ function! s:Toc(...)
     setlocal nomodified
     setlocal nomodifiable
     execute 'normal! ' . l:cursor_header . 'G'
+
+    let w:markdown_toc_window='yes'
+    setlocal nowrap
+    " setlocal filetype=markdown
 endfunction
 
 " Convert Setex headers in range `line1 .. line2` to Atx.
@@ -765,3 +770,471 @@ augroup Mkd
     au InsertEnter,InsertLeave * call s:MarkdownRefreshSyntax(0)
     au CursorHold,CursorHoldI * call s:MarkdownRefreshSyntax(0)
 augroup END
+
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""
+command! -buffer EditMdByLink call s:EditMdByLink(0)
+command! -buffer EditMdByLinkLine call s:EditMdByLink(1)
+command! -buffer TocToggle call s:TocToggle()
+command! -buffer MdTocToggle call MdTocToggle()
+command! -buffer ToggleZoom call s:ToggleZoom()
+command! -buffer PanBuildAndRun call s:PanBuildAndRun()
+command! -buffer AutoExpandLinkFile call s:AutoExpandLink(1)
+command! -buffer AutoExpandLinkDir call s:AutoExpandLink(0)
+command! -buffer AutoOpenUrlByLinkLine call s:OpenUrlByLinkLine()
+command! -buffer DeleteMdByLink call s:DeleteMdByLink()
+
+if exists("*s:EditMdByLink") 
+    finish
+endif
+
+func! s:OpenUrlByLinkLine()
+    let l:lineBuffer = getline('.')
+    let l:localLink = substitute(l:lineBuffer, '.*\](\(.*\)).*', '\1', "g")
+    " echo l:localLink
+    if(g:iswindows==1)
+        let cmd = '!start firefox "'.l:localLink.'"'
+        let cmd = iconv(cmd, "utf-8", "cp936")
+    else
+        let cmd = '!firefox "'.l:localLink.'" &'
+    endif
+    silent exec cmd
+endfunc
+
+" 按回车键自动跳到光标所在的站内wiki链接(光标需要放在链接xxx/xxxx.html上)
+func! s:EditMdByLink(lineMode)
+    if a:lineMode == 1
+        let l:lineBuffer = getline('.')
+    else
+        let l:lineBuffer = expand("<cWORD>")                                                " 获取光标所在处的链接字符串
+    endif
+    let l:localLink = substitute(l:lineBuffer, '.*\](\(.*\)\.\(html\|md\)).*', '\1.md', "g")    " 将链接中的.html改为.md.
+    " echo l:localLink
+    let l:hasLink = match(l:localLink, '.\+\.\(html\|md\)')                                     " 匹配是否存在.html...
+    if l:hasLink == 0                                                                   " ...如果存在才跳转
+        " 检测目标文件所在文件夹是否存在, 如果不存在则创建
+        let l:localLinkDir=fnamemodify(l:localLink, ':h')
+        let l:localLinkDirExist = isdirectory(l:localLinkDir)
+        if !l:localLinkDirExist
+            call mkdir(l:localLinkDir, "p")
+        endif
+
+        " exec "e ".l:localLink 
+        let dir=expand("%:p:h")
+        call s:TocOpenFile(dir.'/'.l:localLink)
+    endif
+endfunc
+
+" 更新日期: 会将.md文件中的<!---LastModify-->或者<!---LastModify:yyyy.mm.dd-->替换为当前日期
+func! s:UpdateMdDatetime()
+    if &modified
+        let savpos = getpos(".")
+        " exec "norm mz"
+        " ^ 如果需要时间可以加上 %H:%M:%S
+        " exec '%s/^<!---LastModify\(.*\)-->.*/<!---LastModify:'.strftime("%Y.%m.%d")."-->"."/e"
+        exec '$s/^Created:\(.*\)LastModify:\(.*\)/Created:\1LastModify:'.strftime("%Y.%m.%d %H:%M")."/e"
+        " exec "norm `z"
+        "call cursor(savpos[1:])
+        call setpos(".", savpos) 
+    endif
+endfunc
+au BufWritePre *.{md,mdown,mkd,mkdn,markdown,mdwn} call s:UpdateMdDatetime()
+
+func! s:TocToggle()
+    call s:FindMdTocPath() 
+    call s:TocWindowToggle() 
+endfunc
+
+func! s:TocWindowToggle()
+    if !exists("t:mdTocPath")
+        echohl WarningMsg | echo "No Toc found." | echohl None
+        return
+    endif
+
+    let g:Toc_WinWidth = 30
+    " let g:Toc_title = 'Toc'
+    let g:Toc_title = t:mdTocPath
+    let win_dir = 'topleft vertical'
+    let win_size = g:Toc_WinWidth
+
+    let winnum = bufwinnr(g:Toc_title)
+    if winnum != -1
+        call s:TocWindowClose()
+        return
+    endif
+
+    let bufnum = bufnr(g:Toc_title)
+    if bufnum == -1
+        " Create a new buffer
+        " let wcmd = g:Toc_title
+        let wcmd = t:mdTocPath
+    else
+        " Edit the existing buffer
+        let wcmd = '+buffer' . bufnum
+    endif
+
+    exe 'silent! ' . win_dir . ' ' . win_size . 'split ' . wcmd
+
+    " set property
+    " setlocal filetype=toc
+    " silent! setlocal buftype=nofile
+    if v:version >= 601
+        silent! setlocal nobuflisted
+    endif
+    silent! setlocal nowrap
+    silent! setlocal noswapfile
+
+    let w:toc_window = "yes"
+    nmap <Leader>aa :ToggleZoom<CR>
+endfunc
+
+function! s:FindMdTocPath()
+    let dir=expand("%:p:h")
+    if exists("t:mdTocPath")
+        return
+    endif
+
+    " let prefixPath="/.KingConfig"
+    let prefixPath = g:prefixPath
+    let tocName="Toc.md"
+    if exists('g:tocFileName')
+        let tocName = g:tocFileName
+    endif
+    let dirLen=len(dir)
+    let iswindows = 0
+    if(has("win32") || has("win95") || has("win64") || has("win16"))
+        let iswindows = 1
+    endif
+    while (iswindows==1 && dirLen>3) || (iswindows!=1 && dirLen>1)
+        if isdirectory(dir.prefixPath) && filereadable(dir."/".tocName)
+           let t:mdTocPath = dir."/".tocName
+           return 
+        endif
+        let dir=fnamemodify(dir, ':h')
+        let dirLen=len(dir)
+    endwhile
+endfunction
+
+function! s:TocWindowClose()
+    " Make sure the taglist window exists
+    let winnum = bufwinnr(t:mdTocPath)
+    if winnum == -1
+        echohl WarningMsg | echo "Error: Toc window is not open" | echohl None
+        return
+    endif
+
+    if winnr() == winnum
+        " Already in the taglist window. Close it and return
+        if winbufnr(2) != -1
+            " If a window other than the taglist window is open,
+            " then only close the taglist window.
+            close
+        endif
+    else
+        " Goto the taglist window, close it and then come back to the
+        " original window
+        let curbufnr = bufnr('%')
+        exe winnum . 'wincmd w'
+        close
+        " Need to jump back to the original window only if we are not
+        " already in that window
+        let winnum = bufwinnr(curbufnr)
+        if winnr() != winnum
+            exe winnum . 'wincmd w'
+        endif
+    endif
+endfunction
+
+func! s:TocOpenFile(filename)
+    " Goto the window containing the file.  If the window is not there, open a
+    " new window
+    let winnum = bufwinnr(a:filename)
+
+    if winnum == -1
+        " Locate the previously used window for opening a file
+        let fwin_num = 0
+        let first_usable_win = 0
+
+        let i = 1
+        let bnum = winbufnr(i)
+        while bnum != -1
+            if getwinvar(i, 'toc_window') != 'yes' && !getwinvar(i, '&previewwindow')
+                let fwin_num = i
+                break
+            endif
+            if first_usable_win == 0 &&
+                        \ getwinvar(i, 'toc_window') != 'yes' &&
+                        \ !getwinvar(i, '&previewwindow')
+                " First non-taglist, non-plugin and non-preview window
+                let first_usable_win = i
+            endif
+            let i = i + 1
+            let bnum = winbufnr(i)
+        endwhile
+
+        " If a previously used window is not found, then use the first
+        " non-taglist window
+        if fwin_num == 0
+            let fwin_num = first_usable_win
+        endif
+
+        if fwin_num != 0
+            " Jump to the file window
+            exe fwin_num . "wincmd w"
+
+            " If the user asked to jump to the tag in a new window, then split
+            " the existing window into two.
+            " if a:win_ctrl == 'newwin'
+                " split
+            " endif
+            " exe "edit " . escape(a:filename, ' ')
+            exe "edit " . a:filename
+        else
+            " Open a new window
+            if winbufnr(2) == -1
+                " Only the taglist window is present
+                    exe 'leftabove vertical split ' .
+                                \ escape(a:filename, ' ')
+
+                " Go to the taglist window to change the window size to
+                " the user configured value
+                call s:Toc_Exe_Cmd_No_Acmds('wincmd p')
+                exe 'vertical resize ' . g:Tlist_WinWidth
+                " Go back to the file window
+                call s:Toc_Exe_Cmd_No_Acmds('wincmd p')
+            else
+                " A plugin or help window is also present
+                wincmd w
+                exe 'leftabove split ' . escape(a:filename, ' ')
+            endif
+        endif
+        " Mark the window, so that it can be reused.
+        " call s:Tlist_Window_Mark_File_Window()
+    else
+        if v:version >= 700
+            " If the file is opened in more than one window, then check
+            " whether the last accessed window has the selected file.
+            " If it does, then use that window.
+            let lastwin_bufnum = winbufnr(winnr('#'))
+            if bufnr(a:filename) == lastwin_bufnum
+                let winnum = winnr('#')
+            endif
+        endif
+        exe winnum . 'wincmd w'
+
+        " If the user asked to jump to the tag in a new window, then split the
+        " existing window into two.
+        " if a:win_ctrl == 'newwin'
+            " split
+        " endif
+    endif
+endfunc
+
+function! s:Toc_Exe_Cmd_No_Acmds(cmd)
+    let old_eventignore = &eventignore
+    set eventignore=all
+    exe a:cmd
+    let &eventignore = old_eventignore
+endfunction
+
+func! MdTocToggle()
+    if MdTocWindowClose() == 0
+        exe 'Toc'
+    endif
+endfunc
+
+function! MdTocWindowClose()
+    " Make sure the taglist window exists
+    let i = 1
+    let bnum = winbufnr(i)
+    while bnum != -1
+        if getwinvar(i, 'markdown_toc_window') == 'yes'
+            break
+        endif
+        let i = i + 1
+        let bnum = winbufnr(i)
+    endwhile
+    
+    let winnum = bnum
+    " let winnum = bufwinnr(t:mdTocPath)
+    if winnum == -1
+        " echohl WarningMsg | echo "Error: Toc window is not open" | echohl None
+        return 0
+    endif
+
+    if winnr() == winnum
+        " Already in the taglist window. Close it and return
+        if winbufnr(2) != -1
+            " If a window other than the taglist window is open,
+            " then only close the taglist window.
+            close
+        endif
+    else
+        " Goto the taglist window, close it and then come back to the
+        " original window
+        let curbufnr = bufnr('%')
+        exe winnum . 'wincmd w'
+        close
+        " Need to jump back to the original window only if we are not
+        " already in that window
+        let winnum = bufwinnr(curbufnr)
+        if winnr() != winnum
+            exe winnum . 'wincmd w'
+        endif
+    endif
+    return 1
+endfunction
+
+function! s:ToggleZoom()
+    if exists("b:TocWindowZoomed") && b:TocWindowZoomed
+        let size = exists("b:Toc_WinWidth") ? b:b:Toc_WinWidth : 30
+        exec "silent vertical resize ". size
+        let b:TocWindowZoomed = 0
+    else
+        exec "vertical resize"
+        let b:TocWindowZoomed = 1
+    endif
+endfunction
+
+func! s:PanBuildAndRun()
+    if !exists('g:cssPath')
+        return
+    endif
+    let cssPath = g:cssPath
+    let srcFile=expand("%")
+    let dstFile=expand("%:r").".html"
+    let cmd = '!pandoc --ascii -c '.cssPath.' '.srcFile.' -o '.dstFile
+    if(g:iswindows==1)
+        let cmd = iconv(cmd, "utf-8", "cp936")
+    endif
+    silent exec cmd
+
+    " replace md link to hmtl link in SUMMARY.md
+    let tocName="Toc.md"
+    if exists('g:tocFileName')
+        let tocName = g:tocFileName
+    endif
+    if srcFile == tocName
+        if(executable('sed') && executable('mv'))
+            let dstFileTemp = dstFile.".tmp"
+            let cmd = "!sed -e '/href=\"\./s/\.md/\.html/' ".dstFile. ">".dstFileTemp." && mv ".dstFileTemp." ".dstFile
+            silent exec cmd
+        endif
+    endif
+
+    if(g:iswindows==1)
+        let cmd = '!start firefox '.dstFile
+        let cmd = iconv(cmd, "utf-8", "cp936")
+    else
+        let cmd = '!firefox '.dstFile.' &'
+    endif
+    silent exec cmd
+endfunc
+
+func! s:AutoExpandLink(isFile)
+    let l:indentChar = ' '
+    let l:indentCount = 4
+    let l:symbol = '-'
+    if a:isFile == 1
+        let l:symbol = '*'
+    endif
+
+    let l:lineBuffer = getline('.')
+    let l:targetName = s:GetNameFromLine(l:lineBuffer)
+    let l:lineNum = line('.')
+    if strlen(l:targetName) > 0
+        " echo l:targetName
+        let l:targetLinkIndentLevel = s:GetLineIndentLevel(l:lineBuffer)
+        " let path = l:targetName.'.html'
+        " let path = substitute(l:targetName, ' ', '-', "g").'.html'
+        let path = substitute(l:targetName, ' ', '-', "g").'.md'
+
+        if l:targetLinkIndentLevel > 0 
+            let l:l = l:lineNum - 1
+            let l:tmpLevel = l:targetLinkIndentLevel
+            while(l:l >= 0)
+                let l:lineBuffer = getline(l:l)
+                let l:indentLevel = s:GetLineIndentLevel(l:lineBuffer)
+                if l:indentLevel == l:tmpLevel - 1
+                    let l:lineBuffer = substitute(l:lineBuffer, '.*\](.*/\(.*\)\.\(html\|md\)).*', '\1', "g")
+                    let l:name = s:GetNameFromLine(l:lineBuffer)
+                    let path = l:name.'/'.path
+                    let l:tmpLevel -= 1
+                endif
+                if l:indentLevel == 0
+                    break
+                endif
+                let l:l -= 1
+            endwhile
+        endif
+        let path = './'.path
+        " echo path
+        let result = repeat(l:indentChar, l:targetLinkIndentLevel * l:indentCount).l:symbol.' ['.l:targetName.']('.path.')'
+        call setline(l:lineNum, result)
+    else
+        echohl WarningMsg | echo "Error: not a valid name" | echohl None
+    endif
+endfunc
+
+func! s:GetNameFromLine(lineBuffer)
+    let l:name = substitute(a:lineBuffer, '+ ', '', "g")
+    let l:name = substitute(l:name, '- ', '', "g")
+    let l:name = substitute(l:name, '* ', '', "g")
+    " let l:name = substitute(l:name, ' ', '', "g")
+    let l:name = substitute(l:name, '^\s*', '', "g")
+    return l:name
+endfunc
+
+func! s:GetLineIndentLevel(lineBuffer)
+    let l:indentCount = 4
+    let result = -1 
+    let N = strlen(a:lineBuffer)
+    if N > 0
+        let i = 0
+        let blankNum = 0
+        while i < N
+            let ch = strpart(a:lineBuffer, i, 1)
+            if ch == ' '
+                let blankNum += 1
+            else
+                break
+            endif
+            let i += 1
+        endwhile
+        let result = blankNum / l:indentCount
+    endif
+    return result
+endfunc
+
+
+func! s:DeleteMdByLink()
+    let l:lineBuffer = getline('.')
+    let l:localLink = substitute(l:lineBuffer, '.*\](\(.*\)\.\(html\|md\)).*', '\1.md', "g")    " 将链接中的.html改为.md.
+    " echo l:localLink
+    let l:hasLink = match(l:localLink, '.\+\.\(html\|md\)')                                     " 匹配是否存在.html...
+    if l:hasLink == 0                                                                   " ...如果存在才跳转
+        " 检测目标文件所在文件夹是否存在, 如果不存在则创建
+        let l:localLinkDir=fnamemodify(l:localLink, ':h')
+        let l:localLinkDirExist = isdirectory(l:localLinkDir)
+        if !l:localLinkDirExist
+            call mkdir(l:localLinkDir, "p")
+        endif
+
+        " exec "e ".l:localLink 
+        let dir=expand("%:p:h")
+        let l:mdFile = dir.'/'.l:localLink
+        if filereadable(l:mdFile)
+             call inputsave()
+             let confirmDelete = input("Delete ".l:mdFile." (y/n):")
+             call inputrestore()
+             if confirmDelete == 'y'
+                 call delete(l:mdFile)
+                 echo " -- Deleted"
+             else
+                 echo " -- Canceled"
+             endif
+        else
+            echo l:mdFile." not found"
+        endif
+    endif
+endfunc
