@@ -1100,6 +1100,10 @@ func! s:PanBuildAndRun()
     if !exists('g:cssPath')
         return
     endif
+    if !executable('pandoc')
+        echohl WarningMsg | echo "Error: pandoc not installed" | echohl None
+        return
+    endif
     let cssPath = g:cssPath
     let srcFile=expand("%")
     let dstFile=expand("%:r").".html"
