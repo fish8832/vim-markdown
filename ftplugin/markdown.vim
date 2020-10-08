@@ -295,6 +295,11 @@ function! s:MoveToPreviousSiblingHeader()
     endif
 endfunction
 
+
+fun! markdown#CloseTocWindow()
+    exe 'bwipeout ' . bufnr()
+endfun
+
 function! s:Toc(...)
     if a:0 > 0
         let l:window_type = a:1
@@ -406,6 +411,11 @@ function! s:Toc(...)
     let w:markdown_toc_window='yes'
     setlocal nowrap
     " setlocal filetype=markdown
+
+    autocmd! BufLeave <buffer> call markdown#CloseTocWindow()
+    map <silent> <buffer> <ESC> :call markdown#CloseTocWindow()<cr>
+    map <silent> <buffer> q <ESC>
+    map <silent> <buffer> <Leader>w <ESC>
 endfunction
 
 " Convert Setex headers in range `line1 .. line2` to Atx.
@@ -808,6 +818,10 @@ func! s:EditMdByLink(lineMode)
     else
         let l:lineBuffer = expand("<cWORD>")                                                " 获取光标所在处的链接字符串
     endif
+    if match(l:lineBuffer, '.*\](\(http\|https\)://.*)') == 0
+        echohl WarningMsg | echo "This is a link, not edittable." | echohl None
+        return
+    endif
     let l:localLink = substitute(l:lineBuffer, '.*\](\(.*\)\.\(html\|md\)).*', '\1.md', "g")    " 将链接中的.html改为.md.
     " echo l:localLink
     let l:hasLink = match(l:localLink, '.\+\.\(html\|md\)')                                     " 匹配是否存在.html...
@@ -1038,9 +1052,9 @@ function! s:Toc_Exe_Cmd_No_Acmds(cmd)
 endfunction
 
 func! MdTocToggle()
-    if MdTocWindowClose() == 0
+    " if MdTocWindowClose() == 0
         exe 'Toc'
-    endif
+    " endif
 endfunc
 
 function! MdTocWindowClose()
@@ -1087,7 +1101,7 @@ endfunction
 
 function! s:ToggleZoom()
     if exists("b:TocWindowZoomed") && b:TocWindowZoomed
-        let size = exists("b:Toc_WinWidth") ? b:b:Toc_WinWidth : 30
+        let size = exists("b:Toc_WinWidth") ? b:Toc_WinWidth : 30
         exec "silent vertical resize ". size
         let b:TocWindowZoomed = 0
     else
